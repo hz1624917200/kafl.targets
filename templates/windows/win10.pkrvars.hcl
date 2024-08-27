@@ -1,5 +1,6 @@
 vm_name = "win10"
-cpus = "4"
+cpus = "8"
+memory = "8192"
 disk_size = "65536"
 iso_url = "https://go.microsoft.com/fwlink/p/?LinkID=2208844&clcid=0x409&culture=en-us&country=US"
 iso_checksum_type = "sha256"

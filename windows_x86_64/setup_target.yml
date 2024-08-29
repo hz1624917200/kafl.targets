@@ -25,6 +25,14 @@
             dest: "{{ ansible_env.APPDATA }}\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\kafl_target.lnk"
       when: target_harness == 'userspace'
 
+    - name: Setup syscall harness target
+      block:
+        - name: Setup userspace target to run at user login
+          win_shortcut:
+            src: "{{ ansible_env.USERPROFILE }}\\Desktop\\bin\\syscall\\syscall_harness.exe"
+            dest: "{{ ansible_env.APPDATA }}\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\kafl_target.lnk"
+      when: target_harness == 'syscall'
+
     - name: Setup driver harness target
       block:
         - name: Upload vuln driver sources

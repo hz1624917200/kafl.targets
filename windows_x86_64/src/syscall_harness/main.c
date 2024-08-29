@@ -24,18 +24,17 @@ along with QEMU-PT.  If not, see <http://www.gnu.org/licenses/>.
 #include <winternl.h>
 #include "nyx_api.h"
 #include <psapi.h>
+#include "utils.h"
 
 
 #define ARRAY_SIZE 1024
 
 #define INFO_SIZE                       (128 << 10)				/* 128KB info string */
+#define SYSCALL_MAX 500
 
 #define PAYLOAD_MAX_SIZE (128*1024)
 
-#define DEVICE_NAME         L"\\Device\\testKafl"
-#define IOCTL_KAFL_INPUT    (ULONG) CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
-#define VULN_DRIVER_NAME "kAFLvulnerabledriver.sys"
-
+#define KERNEL_DRIVER_NAME "ntoskrnl.exe"
 
 PCSTR ntoskrnl = "C:\\Windows\\System32\\ntoskrnl.exe";
 PCSTR kernel_func1 = "KeBugCheck";
@@ -179,9 +178,9 @@ void set_ip_range() {
         pos += sprintf(info_buffer + pos, "START-ADDRESS\t\tEND-ADDRESS\t\tDRIVER\n");
         //_tprintf(TEXT("START-ADDRESS\t\tEND-ADDRESS\t\tDRIVER\n"));      
         for (i=0; i < cDrivers; i++ ){
-            pos += sprintf(info_buffer + pos, "0x%p\t0x%lld\t%s\n", drivers[i], ((UINT64)drivers[i]) + ModuleInfo->Modules[i].ImageSize, ModuleInfo->Modules[i].FullPathName+ModuleInfo->Modules[i].OffsetToFileName);
+            pos += sprintf(info_buffer + pos, "0x%p\t0x%llx\t%s\n", drivers[i], ((UINT64)drivers[i]) + ModuleInfo->Modules[i].ImageSize, ModuleInfo->Modules[i].FullPathName+ModuleInfo->Modules[i].OffsetToFileName);
             // hprintf("%s: driver FullPathName: %s\n", __func__, ModuleInfo->Modules[i].FullPathName);
-            if(strstr((const char*)ModuleInfo->Modules[i].FullPathName, VULN_DRIVER_NAME) > 0 ) {
+            if(strstr((const char*)ModuleInfo->Modules[i].FullPathName, KERNEL_DRIVER_NAME) > 0 ) {
                 uint64_t buffer[3];
                 buffer[0] = (UINT64)drivers[i];
                 buffer[1] = (UINT64)drivers[i] + ModuleInfo->Modules[i].ImageSize;
@@ -191,6 +190,7 @@ void set_ip_range() {
             }
             //_tprintf(TEXT("0x%p\t0x%p\t%s\n"), drivers[i], drivers[i]+ModuleInfo->Modules[i].ImageSize, ModuleInfo->Modules[i].FullPathName+ModuleInfo->Modules[i].OffsetToFileName);
         }
+        hprintf(info_buffer);
    }
    else {
         hprintf("%s: EnumDeviceDrivers failed\n", __func__);
@@ -218,22 +218,6 @@ int main(int argc, char** argv)
     //LPVOID payload_buffer = (LPVOID)VirtualAlloc(0, PAYLOAD_SIZE, MEM_COMMIT, PAGE_READWRITE);
     memset(payload_buffer, 0x0, PAYLOAD_MAX_SIZE);
 
-    /* open vulnerable driver */
-    HANDLE kafl_vuln_handle = NULL;
-    kafl_vuln_handle = CreateFile((LPCSTR)"\\\\.\\testKafl",
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
-        NULL
-    );
-
-    if (kafl_vuln_handle == INVALID_HANDLE_VALUE) {
-        hprintf("[-] KAFL test: Cannot get device handle: 0x%X\n", GetLastError());
-        habort("Cannot get device handle\n");
-    }
-
     init_agent_handshake();
 
     init_panic_handlers();
@@ -253,16 +237,30 @@ int main(int argc, char** argv)
     /* request new payload (*blocking*) */
     kAFL_hypercall(HYPERCALL_KAFL_ACQUIRE, 0); 
 
-    /* kernel fuzzing */
-    DeviceIoControl(kafl_vuln_handle,
-        IOCTL_KAFL_INPUT,
-        (LPVOID)(payload_buffer->data),
-        (DWORD)payload_buffer->size,
-        NULL,
-        0,
-        NULL,
-        NULL
-    );
+    // check the payload params
+    if ((payload_buffer->size >= sizeof(UINT64) * (SYSCALL_REG_ARGS + 1)) &&
+        (payload_buffer->size % sizeof(UINT64) == 0)) {
+        SyscallContext ctx = {0};
+        UINT64* pos = (UINT64*)payload_buffer->data;
+        ctx.id = *pos++;
+        ctx.id &= 0x2FF;   // strip off the high bits
+        if (ctx.id >= SYSCALL_MAX) {
+            // hprintf("invalid syscall id %lld\n", ctx.id);
+            goto fail;
+        }
+        for (int i = 0; i < SYSCALL_REG_ARGS; i++) {
+           ctx.args[i] = *pos++;
+        }
+        if (payload_buffer->size > sizeof(UINT64) * (SYSCALL_REG_ARGS + 1)) {
+            ctx.stack_addr = (void*)*pos;
+        }
+
+        // hprintf("executing syscall %lld(%lld, %lld, %lld, %lld)\n", ctx.id, ctx.args[0], ctx.args[1], ctx.args[2], ctx.args[3]);
+        syscall(&ctx);
+        // hprintf("syscall returned %llx\n", ret);
+fail:
+    ;
+    }
 
     /* inform fuzzer about finished fuzzing iteration */
     // Will reset back to start of snapshot here

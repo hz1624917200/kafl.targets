@@ -18,6 +18,10 @@ compile:
 	x86_64-w64-mingw32-gcc src/userspace/selffuzz_test.c -I ../ -o bin/userspace/selffuzz_test.exe -Wall -mwindows 
 	x86_64-w64-mingw32-gcc src/driver/vuln_test.c -I ../ -o bin/driver/vuln_test.exe -Wall -lntdll -lpsapi
 
+compile_syscall:
+	mkdir -p bin/syscall
+	x86_64-w64-mingw32-gcc src/syscall_harness/main.c -I ../ -o bin/syscall/syscall_harness.exe -Wall -lntdll -lpsapi
+
 provision_userspace: compile ansible
 	vagrant snapshot restore 'ready_provision'
 	TARGET_HARNESS='userspace' vagrant provision
@@ -27,3 +31,9 @@ provision_driver: compile ansible
 	vagrant snapshot restore 'ready_provision'
 	TARGET_HARNESS='driver' vagrant provision
 	vagrant halt
+
+provision_syscall: compile_syscall ansible
+	vagrant snapshot restore 'ready_provision'
+	TARGET_HARNESS='syscall' vagrant provision
+	vagrant halt
+	vagrant snapshot save ready --force
